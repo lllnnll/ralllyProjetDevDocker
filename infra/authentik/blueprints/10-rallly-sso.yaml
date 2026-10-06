@@ -1,0 +1,147 @@
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+#
+# SSO Rallly : provider OIDC + application + groupes + policies + comptes de démo.
+# Appliqué automatiquement par le worker Authentik au démarrage (et à chaque
+# modification du fichier). Statut visible dans : Admin > Customization > Blueprints.
+#
+# Variables lues dans l'environnement du conteneur (cf. compose.yml / .env) :
+#   RALLLY_URL, RALLLY_OIDC_CLIENT_ID, RALLLY_OIDC_CLIENT_SECRET, DEMO_USERS_PASSWORD
+version: 1
+metadata:
+  name: Projet - Rallly SSO (OIDC, groupes, policies)
+  labels:
+    blueprints.goauthentik.io/description: "Client OIDC Rallly, groupes rallly-admins / rallly-users, policies d'accès et comptes de démo."
+context:
+  rallly_url: !Env [RALLLY_URL, "http://rallly.localhost"]
+  demo_password: !Env [DEMO_USERS_PASSWORD, null]
+entries:
+  # ---------------------------------------------------------------------------
+  # Groupes : 2 niveaux de droits distincts
+  #   rallly-admins : accès à Rallly + droits d'administration
+  #   rallly-users  : accès à Rallly
+  #   (aucun des deux) : accès refusé à Rallly
+  # ---------------------------------------------------------------------------
+  - model: authentik_core.group
+    id: group-rallly-admins
+    identifiers:
+      name: rallly-admins
+    attrs:
+      is_superuser: false
+      attributes:
+        description: "Administrateurs Rallly (accès + administration)"
+
+  - model: authentik_core.group
+    id: group-rallly-users
+    identifiers:
+      name: rallly-users
+    attrs:
+      is_superuser: false
+      attributes:
+        description: "Utilisateurs Rallly (accès simple)"
+
+  # ---------------------------------------------------------------------------
+  # Provider OAuth2 / OpenID Connect
+  # ---------------------------------------------------------------------------
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider-rallly
+    identifiers:
+      name: Rallly
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      client_id: !Env RALLLY_OIDC_CLIENT_ID
+      client_secret: !Env RALLLY_OIDC_CLIENT_SECRET
+      redirect_uris:
+        - matching_mode: strict
+          url: !Format ["%s/api/auth/callback/oidc", !Context rallly_url]
+          redirect_uri_type: authorization
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      sub_mode: hashed_user_id
+      include_claims_in_id_token: true
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-email]]
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-profile]]
+
+  # ---------------------------------------------------------------------------
+  # Application (slug "rallly" -> /application/o/rallly/.well-known/openid-configuration)
+  # policy_engine_mode "any" : il suffit d'appartenir à UN des groupes liés.
+  # ---------------------------------------------------------------------------
+  - model: authentik_core.application
+    id: app-rallly
+    identifiers:
+      slug: rallly
+    attrs:
+      name: Rallly
+      provider: !KeyOf provider-rallly
+      meta_launch_url: !Context rallly_url
+      meta_description: "Sondages de dates (via SSO Authentik)"
+      policy_engine_mode: any
+
+  # Policies par groupe : seuls ces deux groupes accèdent à Rallly.
+  # Sans binding, tout utilisateur authentifié aurait accès.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-rallly
+      order: 0
+    attrs:
+      group: !KeyOf group-rallly-admins
+      enabled: true
+      negate: false
+      timeout: 30
+
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf app-rallly
+      order: 10
+    attrs:
+      group: !KeyOf group-rallly-users
+      enabled: true
+      negate: false
+      timeout: 30
+
+  # ---------------------------------------------------------------------------
+  # Comptes de démo (créés une seule fois : "state: created" ne réécrit pas
+  # les modifications faites ensuite dans l'interface).
+  # Ignorés si DEMO_USERS_PASSWORD n'est pas défini.
+  # ---------------------------------------------------------------------------
+  - model: authentik_core.user
+    state: created
+    conditions:
+      - !If [!Context demo_password]
+    identifiers:
+      username: alice
+    attrs:
+      name: Alice Admin
+      email: alice@example.com
+      path: users/demo
+      groups:
+        - !KeyOf group-rallly-admins
+      password: !Context demo_password
+
+  - model: authentik_core.user
+    state: created
+    conditions:
+      - !If [!Context demo_password]
+    identifiers:
+      username: bob
+    attrs:
+      name: Bob Utilisateur
+      email: bob@example.com
+      path: users/demo
+      groups:
+        - !KeyOf group-rallly-users
+      password: !Context demo_password
+
+  - model: authentik_core.user
+    state: created
+    conditions:
+      - !If [!Context demo_password]
+    identifiers:
+      username: charlie
+    attrs:
+      name: Charlie SansAcces
+      email: charlie@example.com
+      path: users/demo
+      password: !Context demo_password

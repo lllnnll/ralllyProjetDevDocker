@@ -1,0 +1,164 @@
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+#
+# Invitation externe : flux d'inscription accessible UNIQUEMENT avec un lien
+# d'invitation valide. L'invité choisit ses identifiants, devient un
+# utilisateur de type "external" et est ajouté au groupe rallly-users
+# (donc autorisé sur Rallly).
+#
+# Utilisation : Admin > Directory > Invitations > New Invitation
+#   - Flow : rallly-invitation
+#   - puis "Send via Email" -> l'e-mail arrive dans Mailpit
+# Lien : http://auth.<DOMAIN>/if/flow/rallly-invitation/?itoken=<token>
+version: 1
+metadata:
+  name: Projet - Invitation externe Rallly
+  labels:
+    blueprints.goauthentik.io/description: "Flux d'enrôlement sur invitation pour utilisateurs externes (ajout automatique à rallly-users)."
+entries:
+  # Groupe cible (aussi défini dans 10-rallly-sso.yaml ; redéclaré ici pour ne
+  # pas dépendre de l'ordre d'application des blueprints)
+  - model: authentik_core.group
+    id: group-rallly-users
+    identifiers:
+      name: rallly-users
+
+  - model: authentik_flows.flow
+    id: flow-invitation
+    identifiers:
+      slug: rallly-invitation
+    attrs:
+      name: Invitation externe Rallly
+      title: Bienvenue ! Créez votre compte pour accéder à Rallly
+      designation: enrollment
+      authentication: require_unauthenticated
+
+  # 1. Vérifie le token d'invitation (sans token valide : flux refusé)
+  - model: authentik_stages_invitation.invitationstage
+    id: stage-invitation
+    identifiers:
+      name: rallly-invitation-check
+    attrs:
+      continue_flow_without_invitation: false
+
+  # 2. Formulaire
+  - model: authentik_stages_prompt.prompt
+    id: field-username
+    identifiers:
+      name: rallly-invitation-field-username
+    attrs:
+      field_key: username
+      label: Nom d'utilisateur
+      type: username
+      required: true
+      placeholder: Nom d'utilisateur
+      placeholder_expression: false
+      order: 0
+
+  - model: authentik_stages_prompt.prompt
+    id: field-name
+    identifiers:
+      name: rallly-invitation-field-name
+    attrs:
+      field_key: name
+      label: Nom complet
+      type: text
+      required: true
+      placeholder: Prénom Nom
+      placeholder_expression: false
+      order: 10
+
+  - model: authentik_stages_prompt.prompt
+    id: field-email
+    identifiers:
+      name: rallly-invitation-field-email
+    attrs:
+      field_key: email
+      label: E-mail
+      type: email
+      required: true
+      placeholder: E-mail
+      placeholder_expression: false
+      order: 20
+
+  - model: authentik_stages_prompt.prompt
+    id: field-password
+    identifiers:
+      name: rallly-invitation-field-password
+    attrs:
+      field_key: password
+      label: Mot de passe
+      type: password
+      required: true
+      placeholder: Mot de passe
+      placeholder_expression: false
+      order: 30
+
+  - model: authentik_stages_prompt.prompt
+    id: field-password-repeat
+    identifiers:
+      name: rallly-invitation-field-password-repeat
+    attrs:
+      field_key: password_repeat
+      label: Mot de passe (confirmation)
+      type: password
+      required: true
+      placeholder: Mot de passe (confirmation)
+      placeholder_expression: false
+      order: 40
+
+  - model: authentik_stages_prompt.promptstage
+    id: stage-prompt
+    identifiers:
+      name: rallly-invitation-prompt
+    attrs:
+      fields:
+        - !KeyOf field-username
+        - !KeyOf field-name
+        - !KeyOf field-email
+        - !KeyOf field-password
+        - !KeyOf field-password-repeat
+
+  # 3. Création de l'utilisateur externe + ajout au groupe rallly-users
+  - model: authentik_stages_user_write.userwritestage
+    id: stage-user-write
+    identifiers:
+      name: rallly-invitation-user-write
+    attrs:
+      user_creation_mode: always_create
+      user_type: external
+      user_path_template: users/external
+      create_users_group: !KeyOf group-rallly-users
+
+  # 4. Connexion automatique
+  - model: authentik_stages_user_login.userloginstage
+    id: stage-user-login
+    identifiers:
+      name: rallly-invitation-user-login
+
+  # Enchaînement des étapes
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf flow-invitation
+      stage: !KeyOf stage-invitation
+      order: 0
+    attrs:
+      evaluate_on_plan: true
+      re_evaluate_policies: true
+
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf flow-invitation
+      stage: !KeyOf stage-prompt
+      order: 10
+
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf flow-invitation
+      stage: !KeyOf stage-user-write
+      order: 20
+
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf flow-invitation
+      stage: !KeyOf stage-user-login
+      order: 100

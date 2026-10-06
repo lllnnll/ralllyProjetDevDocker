@@ -46,10 +46,11 @@ x-authentik-env: &authentik-env
   AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
   AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
   AUTHENTIK_DISABLE_STARTUP_ANALYTICS: "true"
-  # Valeurs lues par les blueprints (provisioning déclaratif, phase 2)
+  # Valeurs lues par les blueprints (authentik/blueprints/*.yaml)
   RALLLY_URL: ${RALLLY_URL}
   RALLLY_OIDC_CLIENT_ID: ${RALLLY_OIDC_CLIENT_ID}
   RALLLY_OIDC_CLIENT_SECRET: ${RALLLY_OIDC_CLIENT_SECRET}
+  DEMO_USERS_PASSWORD: ${DEMO_USERS_PASSWORD:-}
 
 services:
   # ---------------------------------------------------------------------------

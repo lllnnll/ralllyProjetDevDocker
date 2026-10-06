@@ -58,9 +58,22 @@ docker compose up -d
 docker compose ps             # attendre que tout soit "healthy" (Authentik : ~1-2 min au 1er démarrage)
 ```
 
-- Authentik : http://auth.localhost → `akadmin` / mot de passe affiché par le script (`AUTHENTIK_BOOTSTRAP_PASSWORD` dans `.env`).
-- Rallly : http://rallly.localhost → connexion par e-mail. Le code arrive dans http://mail.localhost.
-- Admin Rallly : se connecter avec `RALLLY_INITIAL_ADMIN_EMAIL`, puis aller sur `/control-panel` et cliquer sur « Make me an admin ».
+### Comptes
+
+| Où | Compte | Mot de passe | Rôle |
+|---|---|---|---|
+| Authentik | `akadmin` | `AUTHENTIK_BOOTSTRAP_PASSWORD` | Admin Authentik |
+| Authentik → Rallly | `alice` | `DEMO_USERS_PASSWORD` | Groupe `rallly-admins` |
+| Authentik → Rallly | `bob` | `DEMO_USERS_PASSWORD` | Groupe `rallly-users` |
+| Authentik → Rallly | `charlie` | `DEMO_USERS_PASSWORD` | Aucun groupe → **accès refusé** |
+
+Les deux mots de passe sont affichés par `init-env.sh` et stockés dans `.env`.
+
+Connexion à Rallly : http://rallly.localhost → **Authentik**. Le SSO, les groupes, les policies et
+l'invitation externe sont décrits dans **[docs/authentik.md](docs/authentik.md)**.
+
+Le script `init-env.sh` peut être relancé à tout moment. Il **complète** le `.env` (nouvelles clés)
+sans toucher aux secrets existants.
 
 ### Avec l'image du fork (features du groupe)
 
@@ -106,7 +119,8 @@ Limites assumées (à traiter dans les phases suivantes) :
 ## Feuille de route infra
 
 - [x] Phase 1 : Compose local (Traefik, Authentik, Rallly, PostgreSQL ×2, Garage, Mailpit)
-- [ ] Phase 2 : SSO OIDC Authentik → Rallly (blueprint déclaratif dans `authentik/blueprints/`), deux groupes avec policies, invitation externe
+- [x] Phase 2 : SSO OIDC Authentik → Rallly, groupes + policies, invitation externe (blueprints déclaratifs)
+- [ ] Phase 2b : dashboard Traefik et Mailpit protégés par Authentik (forward-auth, groupe admin)
 - [ ] Phase 3 : durcissement complémentaire, scan Trivy commenté
 - [ ] Phase 4 : déploiement VM Énov (+ TLS), écarts documentés
 - [ ] Phase 5 : CI GitHub Actions (build + scan + push GHCR)
