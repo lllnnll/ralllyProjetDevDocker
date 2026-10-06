@@ -16,6 +16,20 @@
 
 </div>
 
+## 🎓 Projet « Dev avec Docker » (fork)
+
+Ce dépôt est un fork de Rallly utilisé pour le projet du module *Dev avec Docker* (M2 DEVFULLSTACK, Ynov) :
+Rallly self-hosted derrière **Authentik** (OIDC) et **Traefik**, déployé en local et sur VM Énov avec une CI/CD.
+
+➡️ **Toute la partie infra (démarrage, architecture, choix de sécurité) : [`infra/README.md`](./infra/README.md)**
+
+```bash
+cd infra && sh scripts/init-env.sh && docker compose up -d
+```
+
+---
+
+
 <img src="./assets/images/screenshot.png" alt="A Rallly poll showing participants' availability across four time slots" />
 
 Rallly is an open-source scheduling tool that helps you find the best date and time to meet. Create a poll with a few options, share the link, and let your participants vote on when they're available. No more back-and-forth emails.

@@ -1,0 +1,276 @@
+# =============================================================================
+#  Projet « Dev avec Docker » : Traefik + Authentik + Rallly
+# -----------------------------------------------------------------------------
+#  Point d'entrée unique : Traefik (seul service qui publie un port sur l'hôte).
+#
+#    http://rallly.${DOMAIN}    -> Rallly
+#    http://auth.${DOMAIN}      -> Authentik (IdP OIDC)
+#    http://mail.${DOMAIN}      -> Mailpit (SMTP de lab, boîte de réception web)
+#    http://traefik.${DOMAIN}   -> dashboard Traefik
+#
+#  Réseaux :
+#    proxy             : Traefik <-> services exposés (seul réseau avec sortie)
+#    authentik_backend : Authentik <-> sa base          (internal, sans Internet)
+#    rallly_backend    : Rallly <-> sa base + Garage S3 (internal, sans Internet)
+#    mail              : Rallly/Authentik -> Mailpit    (internal)
+#
+#  Aucune base de données ni Garage n'est joignable depuis l'hôte.
+#
+#  Usage : cp .env.example .env  (puis générer les secrets)
+#          docker compose up -d
+# =============================================================================
+
+name: rallly-projet
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+
+x-authentik-env: &authentik-env
+  AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?AUTHENTIK_SECRET_KEY manquant dans .env}
+  AUTHENTIK_POSTGRESQL__HOST: authentik-db
+  AUTHENTIK_POSTGRESQL__NAME: authentik
+  AUTHENTIK_POSTGRESQL__USER: authentik
+  AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD:?AUTHENTIK_DB_PASSWORD manquant}
+  # Compte admin "akadmin" créé au premier démarrage uniquement
+  AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL}
+  AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?AUTHENTIK_BOOTSTRAP_PASSWORD manquant}
+  # E-mails (invitations, récupération de compte) -> Mailpit
+  AUTHENTIK_EMAIL__HOST: mailpit
+  AUTHENTIK_EMAIL__PORT: "1025"
+  AUTHENTIK_EMAIL__USE_TLS: "false"
+  AUTHENTIK_EMAIL__USE_SSL: "false"
+  AUTHENTIK_EMAIL__FROM: ${AUTHENTIK_EMAIL_FROM:-authentik@${DOMAIN}}
+  # Pas de télémétrie / appels sortants inutiles
+  AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+  AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+  AUTHENTIK_DISABLE_STARTUP_ANALYTICS: "true"
+  # Valeurs lues par les blueprints (provisioning déclaratif, phase 2)
+  RALLLY_URL: ${RALLLY_URL}
+  RALLLY_OIDC_CLIENT_ID: ${RALLLY_OIDC_CLIENT_ID}
+  RALLLY_OIDC_CLIENT_SECRET: ${RALLLY_OIDC_CLIENT_SECRET}
+
+services:
+  # ---------------------------------------------------------------------------
+  #  Reverse proxy
+  # ---------------------------------------------------------------------------
+  traefik:
+    <<: *hardening
+    image: traefik:${TRAEFIK_TAG:-v3.7}
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=rallly-projet_proxy
+      - --entrypoints.web.address=:${HTTP_PORT:-80}
+      - --api.dashboard=true
+      - --ping=true
+      - --log.level=INFO
+      - --accesslog=true
+      - --global.checknewversion=false
+      - --global.sendanonymoususage=false
+    ports:
+      # Seul port publié de toute la stack
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:${HTTP_PORT:-80}"
+    volumes:
+      # Lecture seule. Amélioration prévue (phase 3) : docker-socket-proxy.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      proxy:
+        # Les conteneurs résolvent les URL publiques vers Traefik. Indispensable
+        # pour que Rallly lise la discovery OIDC sur la même URL que le
+        # navigateur (sinon l'issuer ne correspond pas).
+        aliases:
+          - auth.${DOMAIN}
+          - rallly.${DOMAIN}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)
+      - traefik.http.routers.dashboard.entrypoints=web
+      - traefik.http.routers.dashboard.service=api@internal
+
+  # ---------------------------------------------------------------------------
+  #  Authentik (IdP OIDC) : server + worker + PostgreSQL
+  #  (Redis n'est plus nécessaire depuis Authentik 2025.10)
+  # ---------------------------------------------------------------------------
+  authentik-db:
+    <<: *hardening
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: authentik
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: ${AUTHENTIK_DB_PASSWORD}
+    volumes:
+      - authentik-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d authentik -U authentik"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [authentik_backend]
+
+  authentik-server:
+    <<: *hardening
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-2026.8.3}
+    command: server
+    environment: *authentik-env
+    shm_size: 512mb
+    volumes:
+      - authentik-data:/data
+      - ./authentik/blueprints:/blueprints/custom:ro
+    depends_on:
+      authentik-db:
+        condition: service_healthy
+    networks: [proxy, authentik_backend, mail]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.authentik.rule=Host(`auth.${DOMAIN}`)
+      - traefik.http.routers.authentik.entrypoints=web
+      - traefik.http.services.authentik.loadbalancer.server.port=9000
+
+  authentik-worker:
+    <<: *hardening
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-2026.8.3}
+    command: worker
+    environment: *authentik-env
+    shm_size: 512mb
+    # Volontairement SANS socket Docker ni "user: root" (contrairement au
+    # compose officiel) : on n'utilise que l'outpost embarqué.
+    volumes:
+      - authentik-data:/data
+      - ./authentik/blueprints:/blueprints/custom:ro
+    depends_on:
+      authentik-db:
+        condition: service_healthy
+    networks: [authentik_backend, mail]
+
+  # ---------------------------------------------------------------------------
+  #  Rallly : app + PostgreSQL + Garage (stockage S3)
+  # ---------------------------------------------------------------------------
+  rallly-db:
+    <<: *hardening
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: rallly
+      POSTGRES_USER: rallly
+      POSTGRES_PASSWORD: ${RALLLY_DB_PASSWORD:?RALLLY_DB_PASSWORD manquant}
+    volumes:
+      # Postgres >= 18 attend le volume sur /var/lib/postgresql
+      - rallly-db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d rallly -U rallly"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [rallly_backend]
+
+  garage:
+    <<: *hardening
+    image: dxflrs/garage:${GARAGE_TAG:-v2.3.0}
+    command: /garage server --single-node --default-bucket
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?GARAGE_RPC_SECRET manquant}
+      GARAGE_DEFAULT_ACCESS_KEY: ${S3_ACCESS_KEY_ID:?S3_ACCESS_KEY_ID manquant}
+      GARAGE_DEFAULT_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:?S3_SECRET_ACCESS_KEY manquant}
+      GARAGE_DEFAULT_BUCKET: rallly
+    volumes:
+      - ./config/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "/garage", "stats", "-a"]
+      interval: 1h
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 5s
+    networks: [rallly_backend]
+
+  rallly:
+    <<: *hardening
+    # Image officielle par défaut ; image du fork via compose.build.yml (local)
+    # ou via l'image publiée par la CI (RALLLY_IMAGE=ghcr.io/...).
+    image: ${RALLLY_IMAGE:-lukevella/rallly:4}
+    environment:
+      NEXT_PUBLIC_BASE_URL: ${RALLLY_URL}
+      DATABASE_URL: postgres://rallly:${RALLLY_DB_PASSWORD}@rallly-db:5432/rallly
+      SECRET_PASSWORD: ${RALLLY_SECRET_PASSWORD:?RALLLY_SECRET_PASSWORD manquant (32 caractères min.)}
+      # Rallly valide ces champs comme e-mails : une valeur vide fait échouer
+      # le démarrage, d'où le ":?".
+      SUPPORT_EMAIL: ${RALLLY_SUPPORT_EMAIL:?RALLLY_SUPPORT_EMAIL manquant}
+      NOREPLY_EMAIL: ${RALLLY_NOREPLY_EMAIL:?RALLLY_NOREPLY_EMAIL manquant}
+      INITIAL_ADMIN_EMAIL: ${RALLLY_INITIAL_ADMIN_EMAIL:-}
+      # Accès
+      EMAIL_LOGIN_ENABLED: ${RALLLY_EMAIL_LOGIN_ENABLED:-true}
+      REGISTRATION_ENABLED: ${RALLLY_REGISTRATION_ENABLED:-true}
+      # SMTP de lab
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_SECURE: "false"
+      # Stockage S3 (Garage, interne)
+      S3_ENDPOINT: http://garage:3900
+      S3_BUCKET_NAME: rallly
+      S3_REGION: garage
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      # SSO Authentik (OIDC désactivé tant que les 3 variables ne sont pas remplies)
+      OIDC_NAME: ${RALLLY_OIDC_NAME:-Authentik}
+      OIDC_DISCOVERY_URL: ${AUTHENTIK_URL}/application/o/rallly/.well-known/openid-configuration
+      OIDC_CLIENT_ID: ${RALLLY_OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${RALLLY_OIDC_CLIENT_SECRET:-}
+    cap_drop: [ALL]
+    depends_on:
+      rallly-db:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+    networks: [proxy, rallly_backend, mail]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.rallly.rule=Host(`rallly.${DOMAIN}`)
+      - traefik.http.routers.rallly.entrypoints=web
+      - traefik.http.services.rallly.loadbalancer.server.port=3000
+
+  # ---------------------------------------------------------------------------
+  #  SMTP de lab
+  # ---------------------------------------------------------------------------
+  mailpit:
+    <<: *hardening
+    image: axllent/mailpit:${MAILPIT_TAG:-v1.31.4}
+    environment:
+      MP_MAX_MESSAGES: "500"
+    cap_drop: [ALL]
+    networks: [proxy, mail]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.mailpit.rule=Host(`mail.${DOMAIN}`)
+      - traefik.http.routers.mailpit.entrypoints=web
+      - traefik.http.services.mailpit.loadbalancer.server.port=8025
+
+networks:
+  proxy:
+    name: rallly-projet_proxy
+  authentik_backend:
+    internal: true
+  rallly_backend:
+    internal: true
+  mail:
+    internal: true
+
+volumes:
+  authentik-db:
+  authentik-data:
+  rallly-db:
+  garage-meta:
+  garage-data:

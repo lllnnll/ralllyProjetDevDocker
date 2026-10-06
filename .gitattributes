@@ -1,0 +1,15 @@
+# Force LF dans le dépôt ET dans la copie de travail, y compris sous Windows.
+# Sans ça, les scripts shell copiés dans les images (docker-start.sh) cassent
+# avec "/bin/sh^M: not found".
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary

@@ -19,3 +19,7 @@ packages/*/dist
 
 # Turbo prune output
 out/
+
+# Projet Dev avec Docker : ne jamais envoyer la stack infra (et son .env) au build
+infra/
+**/.env*

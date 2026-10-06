@@ -52,3 +52,8 @@ next-env.d.ts
 .claude/launch.json
 # Radix -> Base UI migration reports (local skill state)
 .migration/
+
+# Projet Dev avec Docker : secrets de la stack infra
+infra/.env
+infra/.env.*
+!infra/.env.example

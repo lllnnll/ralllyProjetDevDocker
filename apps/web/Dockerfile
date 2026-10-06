@@ -63,6 +63,8 @@ RUN npm add prisma@7
 
 # Copy prisma schema and config for migrations
 COPY --from=builder /app/scripts/docker-start.sh ./
+# Fork : tolère un checkout Windows en CRLF (sinon "/bin/sh^M: not found")
+RUN sed -i 's/\r$//' docker-start.sh && chmod +x docker-start.sh
 COPY --from=builder /app/packages/database/prisma ./prisma
 COPY --from=builder /app/packages/database/prisma.config.ts ./
 

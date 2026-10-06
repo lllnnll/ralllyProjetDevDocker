@@ -1,0 +1,17 @@
+# Garage (stockage S3) en nœud unique, utilisé uniquement par Rallly sur le
+# réseau interne rallly_backend. Le rpc_secret est fourni par la variable
+# GARAGE_RPC_SECRET (.env), jamais commité.
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+
+db_engine = "sqlite"
+replication_factor = 1
+rpc_bind_addr = "[::]:3901"
+
+[s3_api]
+api_bind_addr = "[::]:3900"
+s3_region = "garage"
+root_domain = ".s3.garage.localhost"
+
+[admin]
+api_bind_addr = "[::]:3903"

@@ -1,0 +1,13 @@
+# Surcharge : construit l'image Rallly depuis le code du fork (features du groupe).
+#
+#   docker compose -f compose.yml -f compose.build.yml up -d --build
+#
+# Le premier build est long (~10-15 min, 6-8 Go de RAM conseillés pour Docker).
+services:
+  rallly:
+    image: rallly-fork:local
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args:
+        SELF_HOSTED: "true"
